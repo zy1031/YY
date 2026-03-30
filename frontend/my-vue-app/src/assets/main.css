@@ -1,0 +1,150 @@
+/* ===== 全局样式重置 ===== */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #app {
+  height: 100%;
+  font-family: 'PingFang SC', 'Microsoft YaHei', 'Helvetica Neue', sans-serif;
+  font-size: 14px;
+  color: #2d3447;
+  background: #f5f7fa;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ===== 滚动条 ===== */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #9ca3af; }
+
+/* ===== Element Plus 全局覆盖 ===== */
+
+/* 主色按钮 */
+.el-button--primary {
+  --el-button-bg-color: #4fc3f7;
+  --el-button-border-color: #4fc3f7;
+  --el-button-hover-bg-color: #29b6f6;
+  --el-button-hover-border-color: #29b6f6;
+  --el-button-active-bg-color: #0288d1;
+  transition: all 0.18s ease;
+}
+.el-button {
+  transition: all 0.18s ease;
+}
+.el-button:not(.is-disabled):hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+}
+.el-button:not(.is-disabled):active {
+  transform: translateY(0);
+}
+
+/* 卡片统一圆角和阴影 */
+.el-card {
+  border-radius: 12px !important;
+  border: 1px solid #f1f3f5 !important;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.05) !important;
+  transition: box-shadow 0.2s ease;
+}
+.el-card:hover {
+  box-shadow: 0 4px 16px rgba(0,0,0,0.08) !important;
+}
+
+/* 输入框 */
+.el-input__wrapper {
+  border-radius: 8px;
+  transition: box-shadow 0.18s, border-color 0.18s;
+}
+.el-input__wrapper.is-focus {
+  box-shadow: 0 0 0 3px rgba(79,195,247,0.15) !important;
+}
+
+/* 表格 */
+.el-table {
+  border-radius: 10px;
+  overflow: hidden;
+}
+.el-table th.el-table__cell {
+  background: #f8fafc !important;
+  color: #64748b;
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.el-table--striped .el-table__body tr.el-table__row--striped td.el-table__cell {
+  background: #fafbfc;
+}
+.el-table__body tr:hover td.el-table__cell {
+  background: #f0f9ff !important;
+}
+
+/* Tag */
+.el-tag {
+  border-radius: 6px;
+  font-weight: 500;
+  letter-spacing: 0.3px;
+}
+
+/* Dialog */
+.el-dialog {
+  border-radius: 16px !important;
+  overflow: hidden;
+}
+.el-dialog__header {
+  border-bottom: 1px solid #f1f3f5;
+  padding: 18px 24px 16px;
+}
+.el-dialog__body { padding: 24px; }
+.el-dialog__footer { border-top: 1px solid #f1f3f5; padding: 16px 24px; }
+
+/* Pagination */
+.el-pagination {
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+.el-pagination .el-pager li {
+  border-radius: 6px;
+  transition: all 0.18s;
+}
+
+/* Select */
+.el-select .el-input__wrapper {
+  border-radius: 8px;
+}
+
+/* Notification 圆角 */
+.el-notification {
+  border-radius: 12px !important;
+}
+
+/* Message 圆角 */
+.el-message {
+  border-radius: 10px !important;
+  padding: 12px 18px !important;
+}
+
+/* 动画：fadeIn 工具类 */
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.anim-fade-in {
+  animation: fadeInUp 0.3s cubic-bezier(.4,0,.2,1) both;
+}
+
+/* 各延迟档 */
+.anim-delay-1 { animation-delay: 0.05s; }
+.anim-delay-2 { animation-delay: 0.10s; }
+.anim-delay-3 { animation-delay: 0.15s; }
+.anim-delay-4 { animation-delay: 0.20s; }
+.anim-delay-5 { animation-delay: 0.25s; }
+
+/* Loading 骨架屏优化 */
+.el-skeleton__item {
+  border-radius: 6px;
+}
