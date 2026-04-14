@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
 from app.core.database import get_db
-from app.core.security import get_current_user
+from app.core.security import get_current_user, require_admin
 from app.models.models import AnimalType, DetectionModel
 
 router = APIRouter()
@@ -39,7 +39,7 @@ class ModelConfigUpdate(BaseModel):
 @router.get("/")
 async def list_models(
     animal_type_id: Optional[int] = None,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
     db: Session = Depends(get_db)
 ):
     """获取模型列表，可按动物类型过滤"""
@@ -65,7 +65,7 @@ async def list_models(
 
 @router.get("/switch")
 async def get_current_model(
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
     db: Session = Depends(get_db)
 ):
     """获取当前激活的模型信息（从 system_config 读取）"""
@@ -97,13 +97,15 @@ async def get_current_model(
 
 
 class SwitchModelRequest(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
     model_id: int
 
 
 @router.post("/switch")
 async def switch_model(
     data: SwitchModelRequest,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
     db: Session = Depends(get_db)
 ):
     """切换当前使用的模型"""
@@ -135,7 +137,7 @@ async def switch_model(
 @router.get("/{model_id}")
 async def get_model(
     model_id: int,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
     db: Session = Depends(get_db)
 ):
     """获取模型详情"""
@@ -162,7 +164,7 @@ async def get_model(
 async def update_model_config(
     model_id: int,
     data: ModelConfigUpdate,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
     db: Session = Depends(get_db)
 ):
     """更新模型参数配置"""

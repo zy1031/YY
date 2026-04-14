@@ -1,39 +1,101 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { ElMessage } from 'element-plus'
 import { cameraApi } from '../api/camera'
 import { modelsApi } from '../api/detection'
+import { useAuthStore } from '../stores/auth'
 
-// 配置
-const animalTypes = ref<any[]>([])
-const selectedAnimalType = ref<number | null>(null)
-const selectedCamera = ref(0)
-const availableCameras = ref<{id: number, label: string}[]>([
-  { id: 0, label: '默认摄像头 (0)' },
-  { id: 1, label: '摄像头 1' },
-  { id: 2, label: '摄像头 2' },
-])
+type HealthStatus = 'normal' | 'suspicious' | 'abnormal'
 
-// 状态
-const sessionId = ref('')
-const sessionInfo = ref<any>(null)
-const isConnected = ref(false)
-const isRunning = ref(false)
-const isPaused = ref(false)
-const isMock = ref(false)
+interface AnimalType {
+  id: number
+  name: string
+}
 
-// 统计
-const stats = ref({
+interface CameraOption {
+  id: string
+  label: string
+}
+
+interface SessionInfo {
+  session_id: string
+  is_mock: boolean
+  animal_type: string
+  model_name: string
+}
+
+interface CameraStats {
+  frame_count: number
+  total_targets: number
+  normal_count: number
+  suspicious_count: number
+  abnormal_count: number
+}
+
+interface DetectionItem {
+  target_index: number
+  track_id: number
+  class_name: string
+  confidence: number
+  health_status: HealthStatus
+  bbox_x1: number
+  bbox_y1: number
+  bbox_x2: number
+  bbox_y2: number
+}
+
+interface WsResultMessage {
+  type: 'result'
+  detections?: DetectionItem[]
+  stats: CameraStats
+  is_mock?: boolean
+}
+
+interface WsStatusMessage {
+  type: 'status'
+  status: string
+}
+
+interface WsScreenshotMessage {
+  type: 'screenshot'
+  filename: string
+}
+
+interface WsErrorMessage {
+  type: 'error'
+  message: string
+}
+
+type WsMessage = WsResultMessage | WsStatusMessage | WsScreenshotMessage | WsErrorMessage
+
+const emptyStats = (): CameraStats => ({
   frame_count: 0,
   total_targets: 0,
   normal_count: 0,
   suspicious_count: 0,
   abnormal_count: 0,
 })
-const lastDetections = ref<any[]>([])
+
+const authStore = useAuthStore()
+const canReadModelConfig = computed(() => authStore.isAdmin)
+const animalTypes = ref<AnimalType[]>([])
+const selectedAnimalType = ref<number | null>(null)
+const selectedCamera = ref('default')
+const availableCameras = ref<CameraOption[]>([{ id: 'default', label: '默认摄像头' }])
+
+const sessionId = ref('')
+const sessionInfo = ref<SessionInfo | null>(null)
+const isConnected = ref(false)
+const isRunning = ref(false)
+const isPaused = ref(false)
+const isMock = ref(false)
+const connectionStatus = ref<'idle' | 'connecting' | 'running' | 'paused' | 'stopped' | 'error'>('idle')
+const currentConclusion = ref<HealthStatus>('normal')
+
+const stats = ref<CameraStats>(emptyStats())
+const lastDetections = ref<DetectionItem[]>([])
 const screenshotList = ref<string[]>([])
 
-// Refs
 const videoRef = ref<HTMLVideoElement | null>(null)
 const canvasRef = ref<HTMLCanvasElement | null>(null)
 const offscreenCanvas = ref<HTMLCanvasElement | null>(null)
@@ -41,56 +103,127 @@ const offscreenCanvas = ref<HTMLCanvasElement | null>(null)
 let ws: WebSocket | null = null
 let mediaStream: MediaStream | null = null
 let frameTimer: ReturnType<typeof setInterval> | null = null
-const FRAME_INTERVAL = 200  // 每200ms发送一帧（5fps检测）
+const FRAME_INTERVAL = 250
+const BASE_FRAME_WIDTH = 640
+const BASE_FRAME_HEIGHT = 480
+
+const hasAbnormalAlert = computed(() => currentConclusion.value === 'abnormal')
+const hasSuspiciousAlert = computed(() => currentConclusion.value === 'suspicious')
 
 onMounted(async () => {
   try {
-    const res: any = await modelsApi.getAnimalTypes()
-    animalTypes.value = res.animal_types || []
-  } catch {}
+    const [animalRes, cameraDevices] = await Promise.all([
+      modelsApi.getAnimalTypes().catch(() => ({ animal_types: [] })),
+      loadCameraOptions(),
+    ])
+    animalTypes.value = (animalRes as any).animal_types || []
+    availableCameras.value = cameraDevices
+  } catch {
+    animalTypes.value = []
+  }
+  drawIdleState()
 })
 
 onUnmounted(() => {
   cleanup()
 })
 
+async function loadCameraOptions(): Promise<CameraOption[]> {
+  if (!navigator.mediaDevices?.enumerateDevices) {
+    return [{ id: 'default', label: '默认摄像头' }]
+  }
+
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices()
+    const cameras = devices
+      .filter((d) => d.kind === 'videoinput')
+      .map((d, index) => ({
+        id: d.deviceId || `camera-${index}`,
+        label: d.label || `摄像头 ${index + 1}`,
+      }))
+    return cameras.length ? [{ id: 'default', label: '默认摄像头' }, ...cameras] : [{ id: 'default', label: '默认摄像头' }]
+  } catch {
+    return [{ id: 'default', label: '默认摄像头' }]
+  }
+}
+
+function updateConclusionFromStats(nextStats: CameraStats) {
+  if (nextStats.abnormal_count > 0) currentConclusion.value = 'abnormal'
+  else if (nextStats.suspicious_count > 0) currentConclusion.value = 'suspicious'
+  else currentConclusion.value = 'normal'
+}
+
+function drawIdleState(message = '点击“开始检测”启动实时分析') {
+  const canvas = canvasRef.value
+  if (!canvas) return
+  const width = canvas.clientWidth || BASE_FRAME_WIDTH
+  const height = canvas.clientHeight || BASE_FRAME_HEIGHT
+  canvas.width = width
+  canvas.height = height
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return
+  ctx.clearRect(0, 0, width, height)
+  ctx.fillStyle = '#07111f'
+  ctx.fillRect(0, 0, width, height)
+  ctx.strokeStyle = 'rgba(120, 168, 255, 0.22)'
+  for (let i = 0; i < width; i += 32) {
+    ctx.beginPath()
+    ctx.moveTo(i, 0)
+    ctx.lineTo(i, height)
+    ctx.stroke()
+  }
+  for (let i = 0; i < height; i += 32) {
+    ctx.beginPath()
+    ctx.moveTo(0, i)
+    ctx.lineTo(width, i)
+    ctx.stroke()
+  }
+  ctx.fillStyle = '#d7e3ff'
+  ctx.font = '600 22px Microsoft YaHei'
+  ctx.textAlign = 'center'
+  ctx.fillText('LIVE ANALYSIS STANDBY', width / 2, height / 2 - 14)
+  ctx.fillStyle = '#93a4c3'
+  ctx.font = '14px Microsoft YaHei'
+  ctx.fillText(message, width / 2, height / 2 + 18)
+}
+
 async function startCamera() {
   try {
     mediaStream = await navigator.mediaDevices.getUserMedia({
-      video: { deviceId: selectedCamera.value ? { exact: String(selectedCamera.value) } : undefined }
+      video: selectedCamera.value !== 'default' ? { deviceId: { exact: selectedCamera.value } } : true,
+      audio: false,
     })
+
     if (videoRef.value) {
       videoRef.value.srcObject = mediaStream
       await videoRef.value.play()
     }
-    // 创建离屏 Canvas
+
     offscreenCanvas.value = document.createElement('canvas')
-    offscreenCanvas.value.width = 640
-    offscreenCanvas.value.height = 480
+    offscreenCanvas.value.width = BASE_FRAME_WIDTH
+    offscreenCanvas.value.height = BASE_FRAME_HEIGHT
     ElMessage.success('摄像头已连接')
     return true
-  } catch (e: any) {
-    ElMessage.error('无法访问摄像头，将使用模拟模式')
-    return false  // 摄像头失败时仍可 mock
+  } catch {
+    ElMessage.warning('无法访问摄像头，将使用模拟模式持续演示')
+    return false
   }
 }
 
 async function handleStart() {
-  // 创建检测会话
+  connectionStatus.value = 'connecting'
   try {
     const res: any = await cameraApi.createSession(selectedAnimalType.value ?? undefined)
     sessionId.value = res.session_id
     sessionInfo.value = res
     isMock.value = res.is_mock
-  } catch (e: any) {
-    ElMessage.error(e || '创建会话失败')
+  } catch (e: unknown) {
+    connectionStatus.value = 'error'
+    ElMessage.error((e as string) || '创建会话失败')
     return
   }
 
-  // 启动摄像头
   await startCamera()
-
-  // 连接 WebSocket
   connectWs()
 }
 
@@ -102,22 +235,38 @@ function connectWs() {
     isConnected.value = true
     isRunning.value = true
     isPaused.value = false
-    ElMessage.success('检测已启动')
+    connectionStatus.value = 'running'
+    ElMessage.success('实时检测已启动')
     startFrameCapture()
   }
 
-  ws.onmessage = (event) => {
-    const msg = JSON.parse(event.data)
+  ws.onmessage = (event: MessageEvent<string>) => {
+    const msg = JSON.parse(event.data) as WsMessage
+
     if (msg.type === 'result') {
       lastDetections.value = msg.detections || []
       stats.value = msg.stats
+      isMock.value = !!msg.is_mock || isMock.value
+      updateConclusionFromStats(msg.stats)
       drawDetections(msg.detections || [])
-    } else if (msg.type === 'status') {
-      // 状态更新
-    } else if (msg.type === 'screenshot') {
-      screenshotList.value.push(msg.filename)
+      return
+    }
+
+    if (msg.type === 'status') {
+      if (msg.status === 'paused') connectionStatus.value = 'paused'
+      else if (msg.status === 'running') connectionStatus.value = 'running'
+      else if (msg.status === 'stopped') connectionStatus.value = 'stopped'
+      return
+    }
+
+    if (msg.type === 'screenshot') {
+      screenshotList.value.unshift(msg.filename)
       ElMessage.success('截图已保存: ' + msg.filename)
-    } else if (msg.type === 'error') {
+      return
+    }
+
+    if (msg.type === 'error') {
+      connectionStatus.value = 'error'
       ElMessage.error(msg.message)
     }
   }
@@ -125,11 +274,13 @@ function connectWs() {
   ws.onclose = () => {
     isConnected.value = false
     isRunning.value = false
+    connectionStatus.value = connectionStatus.value === 'error' ? 'error' : 'stopped'
     stopFrameCapture()
   }
 
   ws.onerror = () => {
-    ElMessage.error('WebSocket 连接错误')
+    connectionStatus.value = 'error'
+    ElMessage.error('实时连接异常')
   }
 }
 
@@ -142,137 +293,172 @@ function startFrameCapture() {
 }
 
 function stopFrameCapture() {
-  if (frameTimer) { clearInterval(frameTimer); frameTimer = null }
+  if (frameTimer) {
+    clearInterval(frameTimer)
+    frameTimer = null
+  }
 }
 
 function sendFrame() {
   if (!ws || ws.readyState !== WebSocket.OPEN) return
+
   const oc = offscreenCanvas.value
   const video = videoRef.value
+
   if (oc && video && video.readyState >= 2) {
-    const ctx = oc.getContext('2d')!
+    const ctx = oc.getContext('2d')
+    if (!ctx) return
     ctx.drawImage(video, 0, 0, oc.width, oc.height)
-    const base64 = oc.toDataURL('image/jpeg', 0.6).split(',')[1]
+    const base64 = oc.toDataURL('image/jpeg', 0.72).split(',')[1] || ''
     ws.send(JSON.stringify({ type: 'frame', data: base64 }))
-  } else {
-    // 无摄像头时发空帧（触发 mock）
-    ws.send(JSON.stringify({ type: 'frame', data: '' }))
+    return
   }
+
+  ws.send(JSON.stringify({ type: 'frame', data: '' }))
 }
 
-function drawDetections(detections: any[]) {
+function drawDetections(detections: DetectionItem[]) {
   const canvas = canvasRef.value
-  const video = videoRef.value
   if (!canvas) return
-  const w = canvas.offsetWidth || 640
-  const h = canvas.offsetHeight || 480
-  canvas.width = w
-  canvas.height = h
-  const ctx = canvas.getContext('2d')!
-  ctx.clearRect(0, 0, w, h)
 
-  // 如果有视频，将视频帧绘制到 canvas
-  if (video && video.readyState >= 2) {
-    ctx.drawImage(video, 0, 0, w, h)
-  } else {
-    ctx.fillStyle = '#1a2a3a'
-    ctx.fillRect(0, 0, w, h)
+  const width = canvas.clientWidth || BASE_FRAME_WIDTH
+  const height = canvas.clientHeight || BASE_FRAME_HEIGHT
+  canvas.width = width
+  canvas.height = height
+
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return
+
+  ctx.clearRect(0, 0, width, height)
+
+  if (!videoRef.value || videoRef.value.readyState < 2) {
+    ctx.fillStyle = 'rgba(5, 10, 18, 0.6)'
+    ctx.fillRect(0, 0, width, height)
     ctx.fillStyle = '#a0aec0'
-    ctx.font = '18px sans-serif'
+    ctx.font = '18px Microsoft YaHei'
     ctx.textAlign = 'center'
-    ctx.fillText('摄像头未连接（Mock模式）', w / 2, h / 2)
+    ctx.fillText('模拟模式实时检测中', width / 2, height / 2)
   }
 
-  const colorMap: Record<string, string> = {
-    normal: '#48bb78', suspicious: '#ed8936', abnormal: '#f56565'
+  const colorMap: Record<HealthStatus, string> = {
+    normal: '#34d399',
+    suspicious: '#f59e0b',
+    abnormal: '#f87171',
   }
-  const labelMap: Record<string, string> = {
-    normal: '正常', suspicious: '可疑', abnormal: '异常'
+  const labelMap: Record<HealthStatus, string> = {
+    normal: '正常',
+    suspicious: '可疑',
+    abnormal: '异常',
   }
 
-  // 坐标缩放比例（mock 坐标基于 640x480）
-  const scaleX = w / 640
-  const scaleY = h / 480
+  const scaleX = width / BASE_FRAME_WIDTH
+  const scaleY = height / BASE_FRAME_HEIGHT
 
   for (const det of detections) {
-    const color = colorMap[det.health_status] || '#aaa'
+    const color = colorMap[det.health_status]
     const x1 = det.bbox_x1 * scaleX
     const y1 = det.bbox_y1 * scaleY
     const x2 = det.bbox_x2 * scaleX
     const y2 = det.bbox_y2 * scaleY
-    const label = `ID:${det.track_id} ${det.class_name} ${(det.confidence * 100).toFixed(0)}% [${labelMap[det.health_status]}]`
+    const label = `#${det.track_id} ${det.class_name} ${(det.confidence * 100).toFixed(0)}% · ${labelMap[det.health_status]}`
 
     ctx.strokeStyle = color
-    ctx.lineWidth = 2
+    ctx.lineWidth = 2.5
+    ctx.setLineDash([])
     ctx.strokeRect(x1, y1, x2 - x1, y2 - y1)
 
-    ctx.font = '13px sans-serif'
-    const tw = ctx.measureText(label).width
-    const ly = Math.max(y1 - 4, 18)
     ctx.fillStyle = color
-    ctx.fillRect(x1, ly - 16, tw + 8, 20)
-    ctx.fillStyle = '#fff'
-    ctx.fillText(label, x1 + 4, ly)
+    ctx.font = '12px Microsoft YaHei'
+    const textWidth = ctx.measureText(label).width
+    const textY = Math.max(y1 - 8, 20)
+    ctx.fillRect(x1, textY - 18, textWidth + 12, 22)
+    ctx.fillStyle = '#ffffff'
+    ctx.fillText(label, x1 + 6, textY - 2)
   }
 }
 
 function handlePause() {
   if (!ws) return
   isPaused.value = true
+  connectionStatus.value = 'paused'
   ws.send(JSON.stringify({ type: 'control', action: 'pause' }))
 }
+
 function handleResume() {
   if (!ws) return
   isPaused.value = false
+  connectionStatus.value = 'running'
   ws.send(JSON.stringify({ type: 'control', action: 'resume' }))
 }
+
 function handleStop() {
   if (ws) {
     ws.send(JSON.stringify({ type: 'control', action: 'stop' }))
     ws.close()
   }
-  cleanup()
   cameraApi.stopSession(sessionId.value).catch(() => {})
-  sessionId.value = ''
-  ElMessage.info('检测已停止')
+  cleanup()
+  ElMessage.info('实时检测已停止')
 }
+
 function handleScreenshot() {
-  if (!ws || !ws.OPEN) return
+  if (!ws || ws.readyState !== WebSocket.OPEN) return
+
   const oc = offscreenCanvas.value
   const video = videoRef.value
   let frameData = ''
+
   if (oc && video && video.readyState >= 2) {
-    const ctx = oc.getContext('2d')!
+    const ctx = oc.getContext('2d')
+    if (!ctx) return
     ctx.drawImage(video, 0, 0, oc.width, oc.height)
-    frameData = oc.toDataURL('image/jpeg', 0.9).split(',')[1]
+    frameData = oc.toDataURL('image/jpeg', 0.9).split(',')[1] || ''
   }
+
   ws.send(JSON.stringify({ type: 'control', action: 'screenshot', frame_data: frameData }))
 }
+
 function cleanup() {
   stopFrameCapture()
-  if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null }
-  if (ws) { ws.close(); ws = null }
+  if (mediaStream) {
+    mediaStream.getTracks().forEach((track) => track.stop())
+    mediaStream = null
+  }
+  if (ws) {
+    ws.close()
+    ws = null
+  }
   isRunning.value = false
   isPaused.value = false
   isConnected.value = false
-}
-function handleReset() {
-  stats.value = { frame_count: 0, total_targets: 0, normal_count: 0, suspicious_count: 0, abnormal_count: 0 }
-  lastDetections.value = []
-  screenshotList.value = []
   sessionId.value = ''
   sessionInfo.value = null
-  const canvas = canvasRef.value
-  if (canvas) {
-    const ctx = canvas.getContext('2d')
-    if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height)
-  }
+  connectionStatus.value = 'idle'
+  drawIdleState()
 }
-function healthTagType(s: string) {
+
+function handleReset() {
+  stats.value = emptyStats()
+  lastDetections.value = []
+  screenshotList.value = []
+  currentConclusion.value = 'normal'
+  handleStop()
+}
+
+function healthTagType(s: HealthStatus) {
   return s === 'normal' ? 'success' : s === 'suspicious' ? 'warning' : 'danger'
 }
-function healthLabel(s: string) {
+
+function healthLabel(s: HealthStatus) {
   return s === 'normal' ? '正常' : s === 'suspicious' ? '可疑' : '异常'
+}
+
+function connectionLabel() {
+  return ({ idle: '待启动', connecting: '连接中', running: '检测中', paused: '已暂停', stopped: '已停止', error: '异常' } as const)[connectionStatus.value]
+}
+
+function connectionTagType() {
+  return ({ idle: 'info', connecting: 'warning', running: 'success', paused: 'warning', stopped: 'info', error: 'danger' } as const)[connectionStatus.value]
 }
 </script>
 
@@ -281,6 +467,7 @@ function healthLabel(s: string) {
     <div class="page-header">
       <h2>📷 摄像头实时检测</h2>
       <p>实时视频流 + AI 检测 + BoT-SORT 目标跟踪</p>
+      <el-tag type="primary" effect="dark">本次优先使用所选动物类型对应模型</el-tag>
       <el-tag v-if="isMock" type="warning">Mock 演示模式</el-tag>
       <el-tag v-else type="success">真实检测模式</el-tag>
     </div>
@@ -332,8 +519,18 @@ function healthLabel(s: string) {
               <el-select v-model="selectedAnimalType" placeholder="请选择" clearable style="width:100%">
                 <el-option v-for="t in animalTypes" :key="t.id" :label="t.name" :value="t.id" />
               </el-select>
+              <div class="form-hint">本次会优先使用所选动物类型对应模型；未匹配到时才回退到当前激活模型或 backend/models/best.pt。</div>
             </el-form-item>
           </el-form>
+        </div>
+
+        <!-- 实时统计 -->
+        <div class="card" v-if="sessionInfo && !isRunning">
+          <h3 class="card-title">会话信息</h3>
+          <div class="session-meta">
+            <div><span class="meta-label">动物类型</span><span class="meta-value">{{ sessionInfo.animal_type }}</span></div>
+            <div><span class="meta-label">实际模型</span><span class="meta-value">{{ sessionInfo.model_name }}</span></div>
+          </div>
         </div>
 
         <!-- 实时统计 -->
@@ -388,6 +585,11 @@ function healthLabel(s: string) {
 .side-panel { display:flex; flex-direction:column; gap:12px; }
 .card { background:#fff; border-radius:12px; padding:16px; box-shadow:0 2px 8px rgba(0,0,0,.06); }
 .card-title { margin:0 0 12px; font-size:14px; font-weight:600; color:#2d3447; }
+.form-hint { margin-top: 6px; font-size: 12px; line-height: 1.6; color: #718096; }
+.session-meta { display: flex; flex-direction: column; gap: 10px; }
+.session-meta > div { display: flex; flex-direction: column; gap: 3px; }
+.meta-label { font-size: 12px; color: #718096; }
+.meta-value { font-size: 13px; font-weight: 600; color: #2d3447; word-break: break-all; }
 .stats-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:8px; }
 .stat-item { background:#f7f8fa; border-radius:8px; padding:10px; text-align:center; display:flex; flex-direction:column; gap:2px; }
 .stat-item.normal { background:#f0fff4; } .stat-item.suspicious { background:#fffbeb; } .stat-item.abnormal { background:#fff5f5; }

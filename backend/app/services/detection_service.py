@@ -1,13 +1,46 @@
 """
 图片检测服务
 模型未训练时使用 mock 模式，训练后替换 model_path 即可自动切换到真实推理
+图片检测以行为识别展示为主，健康状态判断主要留给视频/实时监控模块
 """
 import os
 import uuid
 import random
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from datetime import datetime
+
+
+BACKEND_DIR = Path(__file__).resolve().parents[2]
+DEFAULT_MODEL_PATH = BACKEND_DIR / "models" / "best.pt"
+
+
+def resolve_model_path(model_path: Optional[str]) -> str:
+    """优先使用传入路径，其次自动回退到 backend/models/best.pt"""
+    candidates = []
+
+    if model_path:
+        path = Path(model_path)
+        if path.is_absolute():
+            candidates.append(path)
+        else:
+            candidates.append(BACKEND_DIR / path)
+            candidates.append(path)
+
+    candidates.append(DEFAULT_MODEL_PATH)
+
+    seen = set()
+    for candidate in candidates:
+        normalized = str(candidate.resolve(strict=False))
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        if candidate.exists():
+            return normalized
+
+    if candidates:
+        return str(candidates[0].resolve(strict=False))
+    return str(DEFAULT_MODEL_PATH.resolve(strict=False))
 
 
 class DetectionService:
@@ -29,25 +62,23 @@ class DetectionService:
         return not os.path.exists(model_path)
 
     def _mock_detect(self, animal_type_name: str, confidence_threshold: float) -> List[Dict]:
-        """生成模拟检测结果"""
-        health_statuses = ["normal", "normal", "normal", "suspicious", "abnormal"]
+        """生成模拟行为识别结果"""
         classes = {
-            "猪": ["pig", "pig_skin_disease", "pig_lameness"],
-            "牛": ["cow", "cow_foot_disease", "cow_eye_disease"],
-            "羊": ["sheep", "sheep_scab", "sheep_bloat"],
+            "猪": ["Lying", "Sleeping", "Investigating", "Eating", "Walking", "Mounted"],
+            "牛": ["Standing", "Eating", "Walking", "Lying"],
+            "羊": ["Standing", "Eating", "Walking", "Resting"],
         }
-        class_list = classes.get(animal_type_name, ["animal", "animal_abnormal"])
+        class_list = classes.get(animal_type_name, ["Standing", "Walking", "Eating"])
         num_targets = random.randint(1, 4)
         results = []
         for i in range(num_targets):
             confidence = round(random.uniform(confidence_threshold, 0.99), 3)
-            health = random.choice(health_statuses)
-            class_name = class_list[0] if health == "normal" else random.choice(class_list[1:])
+            class_name = random.choice(class_list)
             results.append({
                 "target_index": i,
                 "class_name": class_name,
                 "confidence": confidence,
-                "health_status": health,
+                "health_status": None,
                 "bbox_x1": random.randint(10, 200),
                 "bbox_y1": random.randint(10, 200),
                 "bbox_x2": random.randint(250, 500),
@@ -72,16 +103,12 @@ class DetectionService:
                     cls_id = int(box.cls[0])
                     cls_name = r.names[cls_id]
                     x1, y1, x2, y2 = map(int, box.xyxy[0])
-                    # 简单健康状态判断：类名包含 disease/abnormal/sick 则异常
-                    if any(kw in cls_name.lower() for kw in ["disease", "abnormal", "sick", "lameness", "scab"]):
-                        health = "abnormal" if conf > 0.7 else "suspicious"
-                    else:
-                        health = "normal"
+                    # 图片检测阶段仅做行为识别展示，不在此处输出健康结论
                     detections.append({
                         "target_index": i,
                         "class_name": cls_name,
                         "confidence": round(conf, 3),
-                        "health_status": health,
+                        "health_status": None,
                         "bbox_x1": x1,
                         "bbox_y1": y1,
                         "bbox_x2": x2,
@@ -105,28 +132,26 @@ class DetectionService:
         """
         start_time = datetime.now()
 
-        if self._is_mock_mode(model_path):
+        resolved_model_path = resolve_model_path(model_path)
+
+        if self._is_mock_mode(resolved_model_path):
             detections = self._mock_detect(animal_type_name, confidence_threshold)
             is_mock = True
         else:
             detections = self._real_detect(
-                image_path, model_path, confidence_threshold, iou_threshold
+                image_path, resolved_model_path, confidence_threshold, iou_threshold
             )
             is_mock = False
 
-        # 统计健康状态
-        normal = sum(1 for d in detections if d["health_status"] == "normal")
-        suspicious = sum(1 for d in detections if d["health_status"] == "suspicious")
-        abnormal = sum(1 for d in detections if d["health_status"] == "abnormal")
-
+        # 图片检测阶段不输出健康状态统计，统计字段统一置 0，避免与视频/监控语义混淆
         elapsed = (datetime.now() - start_time).total_seconds()
 
         return {
             "detections": detections,
             "total_targets": len(detections),
-            "normal_count": normal,
-            "suspicious_count": suspicious,
-            "abnormal_count": abnormal,
+            "normal_count": 0,
+            "suspicious_count": 0,
+            "abnormal_count": 0,
             "processing_time": round(elapsed, 3),
             "is_mock": is_mock,
         }

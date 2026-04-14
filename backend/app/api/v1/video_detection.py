@@ -4,6 +4,7 @@
 """
 import os
 import uuid
+from pathlib import Path
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, Form
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
@@ -12,6 +13,7 @@ from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.models import DetectionRecord, TrackingRecord, DetectionModel, AnimalType, SystemConfig
 from app.services.video_detection_service import video_detection_service
+from app.services.detection_service import resolve_model_path
 from app.services.task_manager import task_manager
 
 router = APIRouter()
@@ -25,6 +27,19 @@ def get_current_model_info(db: Session):
     if not config:
         return None, None
     model = db.query(DetectionModel).filter(DetectionModel.id == int(config.config_value)).first()
+    if not model:
+        return None, None
+    animal_type = db.query(AnimalType).filter(AnimalType.id == model.animal_type_id).first()
+    return model, animal_type
+
+
+def get_model_for_animal_type(db: Session, animal_type_id: Optional[int]):
+    if not animal_type_id:
+        return None, None
+    model = db.query(DetectionModel).filter(
+        DetectionModel.animal_type_id == animal_type_id,
+        DetectionModel.status == "active"
+    ).first()
     if not model:
         return None, None
     animal_type = db.query(AnimalType).filter(AnimalType.id == model.animal_type_id).first()
@@ -75,17 +90,15 @@ async def detect_video(
     if not os.path.exists(file_path):
         raise HTTPException(status_code=400, detail="视频文件不存在，请重新上传")
 
-    # 获取模型信息
-    model, animal_type = get_current_model_info(db)
-    if not model and animal_type_id:
-        model = db.query(DetectionModel).filter(
-            DetectionModel.animal_type_id == animal_type_id,
-            DetectionModel.status == "active"
-        ).first()
-        if model:
-            animal_type = db.query(AnimalType).filter(AnimalType.id == model.animal_type_id).first()
+    # 优先使用本次选择的动物类型对应模型
+    model, animal_type = get_model_for_animal_type(db, animal_type_id)
 
-    model_path = model.model_path if model else "models/default.pt"
+    # 未选择或未匹配到时，再使用当前激活模型
+    if not model:
+        model, animal_type = get_current_model_info(db)
+
+    raw_model_path = model.model_path if model else None
+    model_path = resolve_model_path(raw_model_path)
     animal_type_name = animal_type.name if animal_type else "未知"
     confidence_threshold = model.confidence_threshold if model else 0.5
     iou_threshold = model.iou_threshold if model else 0.45
@@ -296,6 +309,6 @@ async def download_result_video(
         raise HTTPException(status_code=404, detail="结果视频不存在（Mock模式不生成结果视频）")
     return FileResponse(
         record.output_file_path,
-        media_type="video/mp4",
-        filename=f"video_detection_{record_id}.mp4"
+        media_type="video/x-msvideo" if record.output_file_path.lower().endswith('.avi') else "video/mp4",
+        filename=f"video_detection_{record_id}{Path(record.output_file_path).suffix}"
     )

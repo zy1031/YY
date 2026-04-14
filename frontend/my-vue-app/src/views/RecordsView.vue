@@ -84,8 +84,8 @@ async function handleBatchDelete() {
 
 function viewDetail(id: number) { router.push(`/records/${id}`) }
 
-function typeLabel(t: string) { return t === 'image' ? '图片' : t === 'video' ? '视频' : '摄像头' }
-function typeTagType(t: string) { return t === 'image' ? 'primary' : t === 'video' ? 'success' : 'warning' }
+function typeLabel(t: string) { return t === 'image' ? '图片行为' : '实时检测' }
+function typeTagType(t: string) { return t === 'image' ? 'primary' : 'warning' }
 function statusLabel(s: string) { return s === 'completed' ? '已完成' : s === 'failed' ? '失败' : '处理中' }
 function statusTagType(s: string) { return s === 'completed' ? 'success' : s === 'failed' ? 'danger' : 'info' }
 function getAnimalTypeName(id: number) { return animalTypes.value.find((t: any) => t.id === id)?.name || '-' }
@@ -95,16 +95,15 @@ function getAnimalTypeName(id: number) { return animalTypes.value.find((t: any) 
   <div class="records-page">
     <div class="page-header">
       <h2>📋 检测记录</h2>
-      <p>查看所有历史检测任务</p>
-      <el-button @click="router.push('/detection/image')" type="primary">+ 新建检测</el-button>
+      <p>查看图片检测与实时检测的历史任务</p>
+      <el-button @click="router.push('/detection/camera')" type="primary">+ 开始实时检测</el-button>
     </div>
 
     <!-- 过滤器 -->
     <div class="filter-bar">
       <el-select v-model="filterType" placeholder="全部类型" clearable @change="handleFilter" style="width:140px">
-        <el-option label="图片检测" value="image" />
-        <el-option label="视频检测" value="video" />
-        <el-option label="摄像头" value="camera" />
+        <el-option label="图片行为识别" value="image" />
+        <el-option label="实时检测" value="camera" />
       </el-select>
       <el-select v-model="filterAnimalType" placeholder="全部动物" clearable @change="handleFilter" style="width:140px">
         <el-option v-for="t in animalTypes" :key="t.id" :label="t.name" :value="t.id" />
@@ -146,7 +145,8 @@ function getAnimalTypeName(id: number) { return animalTypes.value.find((t: any) 
         <el-table-column prop="total_targets" label="目标数" width="90" align="center" />
         <el-table-column label="异常数" width="90" align="center">
           <template #default="{row}">
-            <span :style="{color: row.abnormal_count > 0 ? '#f56565' : 'inherit', fontWeight: row.abnormal_count > 0 ? '700' : 'normal'}">
+            <template v-if="row.detection_type === 'image'">-</template>
+            <span v-else :style="{color: row.abnormal_count > 0 ? '#f56565' : 'inherit', fontWeight: row.abnormal_count > 0 ? '700' : 'normal'}">
               {{ row.abnormal_count }}
             </span>
           </template>

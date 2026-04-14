@@ -22,6 +22,7 @@ api.interceptors.response.use(
       localStorage.removeItem('token')
       localStorage.removeItem('userId')
       localStorage.removeItem('username')
+      localStorage.removeItem('role')
       window.location.href = '/login'
     }
     return Promise.reject(error.response?.data?.detail || '请求失败')

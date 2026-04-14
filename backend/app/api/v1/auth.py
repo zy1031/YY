@@ -1,6 +1,7 @@
 """
 认证相关的 API 路由
 """
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from datetime import timedelta
@@ -17,7 +18,7 @@ class UserRegister(BaseModel):
     """用户注册模型"""
     username: str
     password: str
-    email: str = None
+    email: Optional[str] = None
 
 class UserLogin(BaseModel):
     """用户登录模型"""
@@ -30,12 +31,13 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
     user_id: int
     username: str
+    role: str
 
 class UserResponse(BaseModel):
     """用户响应模型"""
     id: int
     username: str
-    email: str = None
+    email: Optional[str] = None
     role: str
     status: str
     
@@ -126,7 +128,8 @@ async def login(user_data: UserLogin, db: Session = Depends(get_db)):
         "access_token": access_token,
         "token_type": "bearer",
         "user_id": user.id,
-        "username": user.username
+        "username": user.username,
+        "role": user.role,
     }
 
 @router.post("/logout")

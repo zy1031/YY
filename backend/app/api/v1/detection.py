@@ -3,6 +3,7 @@
 """
 import os
 import uuid
+from pathlib import Path
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, Form
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
@@ -10,7 +11,7 @@ from typing import Optional, List
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.models import DetectionRecord, DetectionResult, DetectionModel, AnimalType, SystemConfig
-from app.services.detection_service import detection_service
+from app.services.detection_service import detection_service, resolve_model_path
 from app.services.draw_service import draw_detection_result
 
 router = APIRouter()
@@ -27,6 +28,22 @@ def get_current_model_info(db: Session):
         return None, None
     model = db.query(DetectionModel).filter(
         DetectionModel.id == int(config.config_value)
+    ).first()
+    if not model:
+        return None, None
+    animal_type = db.query(AnimalType).filter(
+        AnimalType.id == model.animal_type_id
+    ).first()
+    return model, animal_type
+
+
+def get_model_for_animal_type(db: Session, animal_type_id: Optional[int]):
+    """优先按本次选择的动物类型匹配模型"""
+    if not animal_type_id:
+        return None, None
+    model = db.query(DetectionModel).filter(
+        DetectionModel.animal_type_id == animal_type_id,
+        DetectionModel.status == "active"
     ).first()
     if not model:
         return None, None
@@ -72,26 +89,20 @@ async def detect_image(
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """对已上传的图片执行检测，返回检测结果"""
+    """对已上传的图片执行行为识别，返回识别结果"""
     if not os.path.exists(file_path):
         raise HTTPException(status_code=400, detail="文件不存在，请重新上传")
 
-    # 获取模型信息
-    model, animal_type = get_current_model_info(db)
+    # 优先使用本次选择的动物类型对应模型
+    model, animal_type = get_model_for_animal_type(db, animal_type_id)
 
-    # 若未选择模型，尝试按 animal_type_id 找第一个可用模型
-    if not model and animal_type_id:
-        model = db.query(DetectionModel).filter(
-            DetectionModel.animal_type_id == animal_type_id,
-            DetectionModel.status == "active"
-        ).first()
-        if model:
-            animal_type = db.query(AnimalType).filter(
-                AnimalType.id == model.animal_type_id
-            ).first()
+    # 未选择或未匹配到时，再使用当前激活模型
+    if not model:
+        model, animal_type = get_current_model_info(db)
 
-    # 仍无模型时使用默认 mock
-    model_path = model.model_path if model else "models/default.pt"
+    # 仍无模型时自动回退到 backend/models/best.pt
+    raw_model_path = model.model_path if model else None
+    model_path = resolve_model_path(raw_model_path)
     animal_type_name = animal_type.name if animal_type else "未知"
     confidence_threshold = model.confidence_threshold if model else 0.5
     iou_threshold = model.iou_threshold if model else 0.45
@@ -117,9 +128,9 @@ async def detect_image(
         input_file_path=file_path,
         detection_status="completed",
         total_targets=result["total_targets"],
-        normal_count=result["normal_count"],
-        suspicious_count=result["suspicious_count"],
-        abnormal_count=result["abnormal_count"],
+        normal_count=0,
+        suspicious_count=0,
+        abnormal_count=0,
         processing_time=int(result["processing_time"] * 1000),
     )
     db.add(record)
@@ -132,7 +143,7 @@ async def detect_image(
             target_index=det["target_index"],
             class_name=det["class_name"],
             confidence=det["confidence"],
-            health_status=det["health_status"],
+            health_status="normal",
             bbox_x1=det["bbox_x1"],
             bbox_y1=det["bbox_y1"],
             bbox_x2=det["bbox_x2"],
@@ -144,12 +155,14 @@ async def detect_image(
     return {
         "record_id": record.id,
         "animal_type": animal_type_name,
-        "model_name": model.model_name if model else "Mock模型",
+        "model_name": model.model_name if model else Path(model_path).name,
+        "task_type": "behavior_recognition",
+        "task_label": "图片行为识别",
         "is_mock": result["is_mock"],
         "total_targets": result["total_targets"],
-        "normal_count": result["normal_count"],
-        "suspicious_count": result["suspicious_count"],
-        "abnormal_count": result["abnormal_count"],
+        "normal_count": 0,
+        "suspicious_count": 0,
+        "abnormal_count": 0,
         "processing_time": result["processing_time"],
         "detections": result["detections"],
     }
@@ -227,6 +240,7 @@ async def get_detection_history(
                 "id": r.id,
                 "detection_type": r.detection_type,
                 "detection_status": r.detection_status,
+                "task_label": "图片行为识别" if r.detection_type == "image" else ("视频检测" if r.detection_type == "video" else "实时监控"),
                 "animal_type_id": r.animal_type_id,
                 "total_targets": r.total_targets,
                 "normal_count": r.normal_count,
@@ -268,6 +282,7 @@ async def get_detection_results(
         "record": {
             "id": record.id,
             "detection_type": record.detection_type,
+            "task_label": "图片行为识别" if record.detection_type == "image" else ("视频检测" if record.detection_type == "video" else "实时监控"),
             "detection_status": record.detection_status,
             "animal_type": animal_type.name if animal_type else "",
             "input_file_path": record.input_file_path,

@@ -9,18 +9,22 @@ import uuid
 import random
 from pathlib import Path
 from datetime import datetime
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, HTTPException
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, HTTPException, status
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
 from app.core.database import get_db
-from app.core.security import get_current_user
+from app.core.security import get_current_user, verify_token
+from jose import JWTError
 from app.models.models import DetectionRecord, DetectionResult, AnimalType, SystemConfig, DetectionModel
 from app.services.camera_service import camera_manager
-from app.services.detection_service import detection_service
+from app.services.detection_service import detection_service, resolve_model_path
+from app.services.health_rule_service import merge_health_and_behavior
 
 router = APIRouter()
+from app.services.health_rule_service import merge_health_and_behavior, summarize_track_health
+
 SCREENSHOT_DIR = Path("uploads/screenshots")
 SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -33,6 +37,19 @@ def get_model_info(db: Session):
         return None, None
     model = db.query(DetectionModel).filter(DetectionModel.id == int(config.config_value)).first()
     animal_type = db.query(AnimalType).filter(AnimalType.id == model.animal_type_id).first() if model else None
+    return model, animal_type
+
+
+def get_model_for_animal_type(db: Session, animal_type_id: Optional[int]):
+    if not animal_type_id:
+        return None, None
+    model = db.query(DetectionModel).filter(
+        DetectionModel.animal_type_id == animal_type_id,
+        DetectionModel.status == "active"
+    ).first()
+    if not model:
+        return None, None
+    animal_type = db.query(AnimalType).filter(AnimalType.id == model.animal_type_id).first()
     return model, animal_type
 
 
@@ -49,16 +66,15 @@ async def create_camera_session(
     db: Session = Depends(get_db)
 ):
     """创建摄像头检测会话，返回 session_id"""
-    model, animal_type = get_model_info(db)
-    if not model and data.animal_type_id:
-        model = db.query(DetectionModel).filter(
-            DetectionModel.animal_type_id == data.animal_type_id,
-            DetectionModel.status == "active"
-        ).first()
-        if model:
-            animal_type = db.query(AnimalType).filter(AnimalType.id == model.animal_type_id).first()
+    # 优先使用本次选择的动物类型对应模型
+    model, animal_type = get_model_for_animal_type(db, data.animal_type_id)
 
-    model_path = model.model_path if model else "models/default.pt"
+    # 未选择或未匹配到时，再使用当前激活模型
+    if not model:
+        model, animal_type = get_model_info(db)
+
+    raw_model_path = model.model_path if model else None
+    model_path = resolve_model_path(raw_model_path)
     animal_type_name = animal_type.name if animal_type else "未知"
     confidence = model.confidence_threshold if model else 0.5
     iou = model.iou_threshold if model else 0.45
@@ -74,7 +90,7 @@ async def create_camera_session(
         "session_id": session.session_id,
         "is_mock": session.is_mock(),
         "animal_type": animal_type_name,
-        "model_name": model.model_name if model else "Mock模型",
+        "model_name": model.model_name if model else Path(model_path).name,
     }
 
 
@@ -153,6 +169,18 @@ async def camera_websocket(
     websocket: WebSocket,
     session_id: str,
 ):
+    token = websocket.query_params.get("token")
+    if not token:
+        await websocket.close(code=1008)
+        return
+
+    try:
+        verify_token(token)
+    except (HTTPException, JWTError, Exception):
+        await websocket.accept()
+        await websocket.send_text(json.dumps({"type": "error", "message": "WebSocket 鉴权失败，请重新登录后重试"}))
+        await websocket.close(code=1008)
+        return
     """
     WebSocket 实时检测接口
     消息格式（前端发送）:
@@ -221,14 +249,19 @@ async def camera_websocket(
                         detections = _mock_detect_frame(session)
 
                 # 更新统计
+                frame_track_status: dict[int, str] = {}
                 for det in detections:
-                    session.total_targets += 1
-                    if det["health_status"] == "normal":
-                        session.normal_count += 1
-                    elif det["health_status"] == "suspicious":
-                        session.suspicious_count += 1
-                    else:
-                        session.abnormal_count += 1
+                    track_id = det.get("track_id", det["target_index"])
+                    history = session.track_health_history.setdefault(track_id, [])
+                    history.append(det["health_status"])
+                    final_status = summarize_track_health(history[-12:])
+                    det["health_status"] = final_status
+                    frame_track_status[track_id] = final_status
+
+                session.total_targets = len(session.track_health_history)
+                session.normal_count = sum(1 for status in frame_track_status.values() if status == "normal")
+                session.suspicious_count = sum(1 for status in frame_track_status.values() if status == "suspicious")
+                session.abnormal_count = sum(1 for status in frame_track_status.values() if status == "abnormal")
 
                 await websocket.send_text(json.dumps({
                     "type": "result",
@@ -304,13 +337,7 @@ async def _real_detect_frame(session, frame_data: str) -> list:
             cls_id = int(box.cls[0])
             cls_name = r.names[cls_id]
             x1, y1, x2, y2 = map(int, box.xyxy[0])
-            status = "abnormal" if any(
-                kw in cls_name.lower() for kw in ["disease", "abnormal", "sick"]
-            ) and conf > 0.7 else (
-                "suspicious" if any(
-                    kw in cls_name.lower() for kw in ["disease", "abnormal"]
-                ) else "normal"
-            )
+            status = merge_health_and_behavior(cls_name, conf, session.animal_type_name)
             detections.append({
                 "target_index": i, "track_id": i,
                 "class_name": cls_name, "confidence": round(conf, 3),

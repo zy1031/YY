@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime, timedelta
 from app.core.database import get_db
-from app.core.security import get_current_user
+from app.core.security import get_current_user, require_admin
 from app.models.models import SystemConfig
 
 router = APIRouter()
@@ -63,7 +63,7 @@ class ConfigUpdate(BaseModel):
 
 @router.get("/")
 async def get_config(
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
     db: Session = Depends(get_db)
 ):
     """获取全部系统配置（带缓存）"""
@@ -82,7 +82,7 @@ async def get_config(
 async def update_config(
     config_key: str,
     data: ConfigUpdate,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
     db: Session = Depends(get_db)
 ):
     """更新单个配置项，同时使缓存失效"""
@@ -106,7 +106,7 @@ async def update_config(
 @router.post("/batch")
 async def batch_update_config(
     data: dict,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
     db: Session = Depends(get_db)
 ):
     """批量更新配置项"""
@@ -132,7 +132,7 @@ async def batch_update_config(
 
 @router.post("/init-defaults")
 async def init_default_configs(
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
     db: Session = Depends(get_db)
 ):
     """初始化默认配置（仅写入不存在的项）"""

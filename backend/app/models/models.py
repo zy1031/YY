@@ -102,21 +102,16 @@ class DetectionResult(Base):
 class TrackingRecord(Base):
     """BoT-SORT跟踪记录表"""
     __tablename__ = "tracking_records"
-    
+    __table_args__ = {"extend_existing": True}
+
     id = Column(Integer, primary_key=True, index=True)
     detection_record_id = Column(Integer, nullable=False, index=True)
     track_id = Column(Integer, nullable=False)
-    animal_id = Column(Integer, nullable=True)
     start_frame = Column(Integer, nullable=True)
     end_frame = Column(Integer, nullable=True)
-    start_time = Column(DateTime, nullable=True)
-    end_time = Column(DateTime, nullable=True)
-    duration_seconds = Column(Integer, nullable=True)
     total_frames = Column(Integer, nullable=True)
-    trajectory_data = Column(JSON, nullable=True)
     avg_confidence = Column(Float, nullable=True)
     health_status_summary = Column(String(50), nullable=True)
-    remarks = Column(Text, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
 
 class LLMReport(Base):

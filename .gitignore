@@ -1,0 +1,20 @@
+# IDE配置
+.idea/
+.vscode/
+
+# Python缓存
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 上传的文件、数据集、模型
+uploads/
+models/
+Dataset/
+*.pt
+yolov*.pt
+
+# 其他临时文件
+*.log
+.DS_Store

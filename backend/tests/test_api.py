@@ -5,7 +5,6 @@
 """
 import pytest
 import io
-import json
 from pathlib import Path
 from fastapi.testclient import TestClient
 
@@ -14,6 +13,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from main import app
+from app.services.health_rule_service import merge_health_and_behavior, summarize_track_health, classify_species_behavior
 
 # starlette 0.27 兼容写法
 client = TestClient(app)
@@ -24,7 +24,12 @@ TEST_USER = {
     "password": "Test123456",
     "email": "pytest@test.com",
 }
+ADMIN_USER = {
+    "username": "admin",
+    "password": "admin",
+}
 _token = None
+_admin_token = None
 
 
 def get_token():
@@ -46,8 +51,21 @@ def get_token():
     return _token
 
 
+def get_admin_token():
+    global _admin_token
+    if _admin_token:
+        return _admin_token
+    resp = client.post("/api/auth/login", json=ADMIN_USER)
+    _admin_token = resp.json().get("access_token", "") if resp.status_code == 200 else ""
+    return _admin_token
+
+
 def auth_headers():
     return {"Authorization": f"Bearer {get_token()}"}
+
+
+def admin_headers():
+    return {"Authorization": f"Bearer {get_admin_token()}"}
 
 
 # ==================== 认证测试 ====================
@@ -55,20 +73,17 @@ def auth_headers():
 class TestAuth:
     def test_register_and_login(self):
         """测试注册和登录流程"""
-        # 尝试注册（可能已存在）
         resp = client.post("/api/auth/register", json={
             "username": "new_test_user_abc",
             "password": "Test123456",
             "email": "new_abc@test.com",
         })
-        assert resp.status_code in [200, 400]  # 200=成功 400=已存在
+        assert resp.status_code in [200, 400]
 
-        # 登录
         resp = client.post("/api/auth/login", json={
             "username": TEST_USER["username"],
             "password": TEST_USER["password"],
         })
-        # 如果用户不存在先注册
         if resp.status_code == 401:
             client.post("/api/auth/register", json=TEST_USER)
             resp = client.post("/api/auth/login", json={
@@ -78,9 +93,9 @@ class TestAuth:
         assert resp.status_code == 200
         data = resp.json()
         assert "access_token" in data
+        assert "role" in data
 
     def test_login_wrong_password(self):
-        """测试错误密码"""
         resp = client.post("/api/auth/login", json={
             "username": TEST_USER["username"],
             "password": "wrongpassword",
@@ -88,13 +103,10 @@ class TestAuth:
         assert resp.status_code in [401, 400]
 
     def test_protected_route_without_token(self):
-        """测试未认证访问保护路由"""
         resp = client.get("/api/users/profile")
-        # FastAPI OAuth2 无 token 时可能返回 401 或 403
         assert resp.status_code in [401, 403]
 
     def test_get_current_user(self):
-        """测试获取当前用户信息"""
         resp = client.get("/api/users/profile", headers=auth_headers())
         assert resp.status_code == 200
         data = resp.json()
@@ -137,9 +149,6 @@ class TestAnimalTypes:
 class TestImageDetection:
     def test_detect_image_mock(self):
         """测试图片检测（Mock模式，无需模型文件）"""
-        # 创建一个简单的测试图片（1x1 像素的 JPEG）
-        import struct
-        # 最小有效 JPEG
         jpeg_bytes = bytes([
             0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01,
             0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0xFF, 0xDB, 0x00, 0x43,
@@ -163,11 +172,9 @@ class TestImageDetection:
             files=files,
             headers=auth_headers()
         )
-        # 允许 200（成功）或 500（无模型但服务正常）
         assert resp.status_code in [200, 422, 500]
 
     def test_get_detection_history(self):
-        """测试获取检测历史"""
         resp = client.get("/api/detection/history", headers=auth_headers())
         assert resp.status_code == 200
         data = resp.json()
@@ -195,23 +202,44 @@ class TestStatistics:
         assert resp.status_code == 200
 
 
+class TestHealthRules:
+    def test_keyword_rule_for_abnormal(self):
+        assert merge_health_and_behavior("pig_skin_disease", 0.85) == "abnormal"
+
+    def test_behavior_rule_for_suspicious(self):
+        assert merge_health_and_behavior("restless_walking", 0.7) == "suspicious"
+
+    def test_sheep_activity_is_normal(self):
+        assert classify_species_behavior("羊", "活动", 0.9) == "normal"
+
+    def test_sheep_eating_is_normal(self):
+        assert classify_species_behavior("羊", "进食", 0.9) == "normal"
+
+    def test_sheep_lying_is_normal(self):
+        assert classify_species_behavior("羊", "躺卧", 0.9) == "normal"
+
+    def test_track_summary_rule(self):
+        result = summarize_track_health(["normal", "suspicious", "abnormal", "abnormal"])
+        assert result == "abnormal"
+
+
 # ==================== 系统配置测试 ====================
 
 class TestConfig:
-    def test_get_config(self):
+    def test_get_config_requires_admin(self):
         resp = client.get("/api/config/", headers=auth_headers())
-        assert resp.status_code == 200
+        assert resp.status_code == 403
 
-    def test_update_config(self):
+    def test_update_config_requires_admin(self):
         resp = client.put("/api/config/test_key",
             json={"config_value": "test_value"},
             headers=auth_headers()
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 403
 
-    def test_init_defaults(self):
+    def test_init_defaults_requires_admin(self):
         resp = client.post("/api/config/init-defaults", headers=auth_headers())
-        assert resp.status_code == 200
+        assert resp.status_code == 403
 
 
 # ==================== 报告测试 ====================

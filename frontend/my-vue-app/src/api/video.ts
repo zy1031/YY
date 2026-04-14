@@ -1,5 +1,33 @@
 import api from './request'
 
+function resolveExtension(contentType: string) {
+  if (contentType.includes('avi')) return 'avi'
+  if (contentType.includes('quicktime')) return 'mov'
+  if (contentType.includes('webm')) return 'webm'
+  return 'mp4'
+}
+
+async function fetchVideoBlob(record_id: number) {
+  const token = localStorage.getItem('token')
+  const response = await fetch(`http://localhost:8000/api/video/${record_id}/download`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  })
+
+  if (!response.ok) {
+    const text = await response.text()
+    throw new Error(text || '视频获取失败')
+  }
+
+  const blob = await response.blob()
+  const contentType = response.headers.get('content-type') || 'video/mp4'
+  const videoBlob = blob.type && blob.type.startsWith('video/') ? blob : new Blob([blob], { type: contentType })
+  return {
+    blob: videoBlob,
+    contentType,
+    extension: resolveExtension(contentType),
+  }
+}
+
 export const videoApi = {
   // 上传视频
   upload: (file: File) => {
@@ -34,6 +62,21 @@ export const videoApi = {
     api.get(`/api/video/${record_id}/tracks`),
 
   // 下载结果视频
-  downloadVideo: (record_id: number) =>
-    window.open(`http://localhost:8000/api/video/${record_id}/download`, '_blank'),
+  downloadVideo: async (record_id: number) => {
+    const { blob, extension } = await fetchVideoBlob(record_id)
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `video_detection_${record_id}.${extension}`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  },
+
+  // 获取结果视频播放地址
+  getVideoPreviewUrl: async (record_id: number) => {
+    const { blob } = await fetchVideoBlob(record_id)
+    return URL.createObjectURL(blob)
+  },
 }

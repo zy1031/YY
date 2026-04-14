@@ -3,21 +3,51 @@ import { RouterView, useRouter, useRoute } from 'vue-router'
 import { ref, computed, watch } from 'vue'
 import { useAuthStore } from './stores/auth'
 
+interface MenuItem {
+  index: string
+  icon: string
+  title: string
+  adminOnly?: boolean
+}
+
+interface MenuGroup {
+  label: string
+  items: MenuItem[]
+}
+
 const router = useRouter()
 const route = useRoute()
 const authStore = useAuthStore()
 const isCollapse = ref(false)
 const pageLoading = ref(false)
+let loadingTimer: ReturnType<typeof setTimeout> | null = null
 
-const isAuthPage = computed(() => {
-  return route.name === 'login' || route.name === 'register'
-})
+const isAuthPage = computed(() => route.name === 'login' || route.name === 'register')
+const showPageTransition = computed(() => !isAuthPage.value)
 
-// 路由切换 loading
-router.beforeEach(() => { pageLoading.value = true })
-router.afterEach(() => { setTimeout(() => { pageLoading.value = false }, 200) })
+watch(
+  () => route.fullPath,
+  () => {
+    if (isAuthPage.value) {
+      pageLoading.value = false
+      if (loadingTimer) {
+        clearTimeout(loadingTimer)
+        loadingTimer = null
+      }
+      return
+    }
 
-const menuGroups = [
+    pageLoading.value = true
+    if (loadingTimer) clearTimeout(loadingTimer)
+    loadingTimer = setTimeout(() => {
+      pageLoading.value = false
+      loadingTimer = null
+    }, 160)
+  },
+  { immediate: true },
+)
+
+const menuGroups: MenuGroup[] = [
   {
     label: '检测',
     items: [
@@ -38,12 +68,20 @@ const menuGroups = [
   {
     label: '管理',
     items: [
-      { index: '/animals', icon: 'Paw', title: '动物档案' },
-      { index: '/models', icon: 'Cpu', title: '模型管理' },
-      { index: '/settings', icon: 'Setting', title: '系统配置' },
+      { index: '/models', icon: 'Cpu', title: '模型管理', adminOnly: true },
+      { index: '/settings', icon: 'Setting', title: '系统配置', adminOnly: true },
     ],
   },
 ]
+
+const visibleMenuGroups = computed(() => {
+  return menuGroups
+    .map((group) => ({
+      ...group,
+      items: group.items.filter((item) => !item.adminOnly || authStore.isAdmin),
+    }))
+    .filter((group) => group.items.length > 0)
+})
 
 // 当前激活菜单项
 const activeIndex = computed(() => route.path)
@@ -51,6 +89,7 @@ const activeIndex = computed(() => route.path)
 function handleCommand(cmd: string) {
   if (cmd === 'logout') {
     authStore.logout()
+    pageLoading.value = false
     router.push('/login')
   } else if (cmd === 'profile') {
     router.push('/users/profile')
@@ -80,7 +119,7 @@ function handleCommand(cmd: string) {
 
         <!-- 菜单 -->
         <div class="menu-scroll">
-          <div v-for="group in menuGroups" :key="group.label" class="menu-group">
+          <div v-for="group in visibleMenuGroups" :key="group.label" class="menu-group">
             <div v-if="!isCollapse" class="menu-group-label">{{ group.label }}</div>
             <div
               v-for="item in group.items"
@@ -144,7 +183,7 @@ function handleCommand(cmd: string) {
               <template #dropdown>
                 <el-dropdown-menu>
                   <el-dropdown-item command="logout">
-                    <el-icon><SwitchButton /></el-icon>
+                    <el-icon><Right /></el-icon>
                     退出登录
                   </el-dropdown-item>
                 </el-dropdown-menu>
@@ -159,9 +198,12 @@ function handleCommand(cmd: string) {
             <div class="loading-bar"></div>
           </div>
           <RouterView v-slot="{ Component }">
-            <transition name="page" mode="out-in">
-              <component :is="Component" />
-            </transition>
+            <template v-if="showPageTransition">
+              <transition name="page" mode="out-in">
+                <component :is="Component" />
+              </transition>
+            </template>
+            <component :is="Component" v-else />
           </RouterView>
         </el-main>
       </el-container>
@@ -385,15 +427,16 @@ function handleCommand(cmd: string) {
 /* 页面 loading 条 */
 .page-loading {
   position: absolute;
-  top: 0; left: 0; right: 0;
+  inset: 0 0 auto 0;
   z-index: 100;
   overflow: hidden;
   height: 2px;
+  pointer-events: none;
 }
 .loading-bar {
   height: 2px;
   background: linear-gradient(90deg, transparent, #4fc3f7, #0288d1, transparent);
-  animation: loadbar 0.6s ease-in-out;
+  animation: loadbar 0.45s ease-in-out;
 }
 @keyframes loadbar {
   0% { transform: translateX(-100%); }
@@ -403,15 +446,17 @@ function handleCommand(cmd: string) {
 /* ===== 过渡动画 ===== */
 .page-enter-active,
 .page-leave-active {
-  transition: all 0.2s ease;
+  transition: opacity 0.14s ease, transform 0.14s ease;
 }
-.page-enter-from {
-  opacity: 0;
-  transform: translateY(6px);
-}
+.page-enter-from,
 .page-leave-to {
   opacity: 0;
-  transform: translateY(-4px);
+  transform: translateY(4px);
+}
+.page-enter-to,
+.page-leave-from {
+  opacity: 1;
+  transform: translateY(0);
 }
 
 .fade-enter-active, .fade-leave-active { transition: opacity 0.2s; }

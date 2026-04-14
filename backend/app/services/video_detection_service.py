@@ -7,14 +7,62 @@
 import os
 import uuid
 import random
+import shutil
+import subprocess
 from pathlib import Path
 from typing import List, Dict, Any, Callable, Optional
 from datetime import datetime
 
 from app.services.tracker_service import BotSortTracker
+from app.services.detection_service import resolve_model_path
+from app.services.health_rule_service import merge_health_and_behavior, summarize_counts_from_tracks, summarize_track_health
 
 RESULT_VIDEO_DIR = Path("uploads/results/videos")
 RESULT_VIDEO_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _get_ffmpeg_path() -> Optional[str]:
+    candidates = [
+        shutil.which("ffmpeg"),
+        os.getenv("FFMPEG_PATH"),
+        r"C:\ffmpeg\bin\ffmpeg.exe",
+        r"C:\Program Files\ffmpeg\bin\ffmpeg.exe",
+        r"C:\Program Files (x86)\ffmpeg\bin\ffmpeg.exe",
+    ]
+    for candidate in candidates:
+        if candidate and Path(candidate).exists():
+            return str(Path(candidate))
+    return None
+
+
+def _transcode_to_browser_mp4(source_path: str) -> str:
+    ffmpeg_path = _get_ffmpeg_path()
+    if not ffmpeg_path:
+        return source_path
+
+    source = Path(source_path)
+    target = source.with_suffix('.mp4')
+    command = [
+        ffmpeg_path,
+        '-y',
+        '-i',
+        str(source),
+        '-c:v',
+        'libx264',
+        '-pix_fmt',
+        'yuv420p',
+        '-movflags',
+        '+faststart',
+        str(target),
+    ]
+
+    try:
+        subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if target.exists() and target.stat().st_size > 0:
+            return str(target)
+    except Exception:
+        pass
+    return source_path
 
 
 class VideoDetectionService:
@@ -68,7 +116,13 @@ class VideoDetectionService:
     #  真实逐帧检测（YOLO + BoT-SORT）
     # ------------------------------------------------------------------ #
     def _real_detect_frame(
-        self, frame, model, confidence_threshold: float, iou_threshold: float, names: dict
+        self,
+        frame,
+        model,
+        confidence_threshold: float,
+        iou_threshold: float,
+        names: dict,
+        animal_type_name: str,
     ) -> List[Dict]:
         results = model(frame, conf=confidence_threshold, iou=iou_threshold, verbose=False)
         detections = []
@@ -78,15 +132,7 @@ class VideoDetectionService:
                 cls_id = int(box.cls[0])
                 cls_name = names[cls_id]
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
-                status = "abnormal" if any(
-                    kw in cls_name.lower()
-                    for kw in ["disease", "abnormal", "sick", "lameness", "scab"]
-                ) and conf > 0.7 else (
-                    "suspicious" if any(
-                        kw in cls_name.lower()
-                        for kw in ["disease", "abnormal", "sick"]
-                    ) else "normal"
-                )
+                status = merge_health_and_behavior(cls_name, conf, animal_type_name)
                 detections.append({
                     "target_index": i, "class_name": cls_name,
                     "confidence": round(conf, 3), "health_status": status,
@@ -111,7 +157,7 @@ class VideoDetectionService:
         对视频进行检测，返回逐帧结果和跟踪摘要
         sample_interval: 采样间隔帧数（减少处理量）
         """
-        is_mock = not os.path.exists(model_path)
+        is_mock = not Path(resolve_model_path(model_path)).exists()
         tracker = BotSortTracker()
 
         all_frame_results: List[Dict] = []   # 每帧检测结果
@@ -149,18 +195,21 @@ class VideoDetectionService:
             try:
                 import cv2
                 from ultralytics import YOLO
-                model = YOLO(model_path)
+                model = YOLO(resolve_model_path(model_path))
                 cap = cv2.VideoCapture(video_path)
                 total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
                 fps = cap.get(cv2.CAP_PROP_FPS) or 25
                 width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                 height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-                # 输出视频
-                result_name = f"result_{uuid.uuid4().hex}.mp4"
+                # 输出视频（优先生成浏览器更兼容的 AVI，再沿用下载接口输出）
+                result_name = f"result_{uuid.uuid4().hex}.avi"
                 result_video_path = str(RESULT_VIDEO_DIR / result_name)
-                fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+                fourcc = cv2.VideoWriter_fourcc(*"XVID")
                 out = cv2.VideoWriter(result_video_path, fourcc, fps, (width, height))
+                if not out.isOpened():
+                    fourcc = cv2.VideoWriter_fourcc(*"MJPG")
+                    out = cv2.VideoWriter(result_video_path, fourcc, fps, (width, height))
 
                 frame_idx = 0
                 while cap.isOpened():
@@ -169,7 +218,12 @@ class VideoDetectionService:
                         break
                     if frame_idx % sample_interval == 0:
                         dets = self._real_detect_frame(
-                            frame, model, confidence_threshold, iou_threshold, model.names
+                            frame,
+                            model,
+                            confidence_threshold,
+                            iou_threshold,
+                            model.names,
+                            animal_type_name,
                         )
                         tracked = tracker.update_mock(dets, frame_idx)
                         for t in tracked:
@@ -199,6 +253,7 @@ class VideoDetectionService:
                         progress_callback(frame_idx, total_frames)
                 cap.release()
                 out.release()
+                result_video_path = _transcode_to_browser_mp4(result_video_path)
             except ImportError as e:
                 raise RuntimeError(f"缺少依赖: {e}，请运行 pip install opencv-python ultralytics")
 
@@ -210,7 +265,7 @@ class VideoDetectionService:
             statuses = data["health_statuses"]
             abnormal = statuses.count("abnormal")
             suspicious = statuses.count("suspicious")
-            overall = "abnormal" if abnormal > 0 else ("suspicious" if suspicious > 0 else "normal")
+            overall = summarize_track_health(statuses)
             avg_conf = round(sum(data["confidences"]) / len(data["confidences"]), 3) if data["confidences"] else 0
             frames = data["frames"]
             track_summaries.append({
@@ -227,12 +282,11 @@ class VideoDetectionService:
         # 统计
         unique_targets = len(track_data)
         all_statuses = [t["health_status"] for t in all_frame_results]
-        # 按目标统计（以整体轨迹状态为准）
-        track_statuses = [s["health_status_summary"] for s in track_summaries]
+        counts = summarize_counts_from_tracks(track_summaries)
         total_targets = unique_targets
-        normal_count = sum(1 for s in track_statuses if s == "normal")
-        suspicious_count = sum(1 for s in track_statuses if s == "suspicious")
-        abnormal_count = sum(1 for s in track_statuses if s == "abnormal")
+        normal_count = counts["normal"]
+        suspicious_count = counts["suspicious"]
+        abnormal_count = counts["abnormal"]
 
         return {
             "is_mock": is_mock,

@@ -1,6 +1,7 @@
 import api from './request'
 
-const WS_BASE = 'ws://localhost:8000'
+const API_BASE = 'http://localhost:8000'
+const WS_BASE = API_BASE.replace(/^http/, 'ws')
 
 export const cameraApi = {
   // 创建会话
@@ -16,6 +17,9 @@ export const cameraApi = {
     api.delete(`/api/camera/session/${session_id}`),
 
   // WebSocket URL
-  getWsUrl: (session_id: string) =>
-    `${WS_BASE}/api/camera/ws/${session_id}`,
+  getWsUrl: (session_id: string) => {
+    const token = localStorage.getItem('token')
+    const suffix = token ? `?token=${encodeURIComponent(token)}` : ''
+    return `${WS_BASE}/api/camera/ws/${session_id}${suffix}`
+  },
 }

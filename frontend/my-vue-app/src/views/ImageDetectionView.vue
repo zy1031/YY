@@ -1,11 +1,15 @@
 <script setup lang="ts">
-import { ref, onMounted, nextTick } from 'vue'
+import { ref, onMounted, nextTick, computed } from 'vue'
 import { ElMessage } from 'element-plus'
 import { modelsApi, detectionApi } from '../api/detection'
+import { useAuthStore } from '../stores/auth'
 
+const authStore = useAuthStore()
 const animalTypes = ref<any[]>([])
 const selectedAnimalType = ref<number | null>(null)
 const currentModel = ref<any>(null)
+const canReadModelConfig = computed(() => authStore.isAdmin)
+const currentModelText = computed(() => currentModel.value?.model_name || '按所选动物类型自动匹配')
 const uploadedFilePath = ref('')
 const previewUrl = ref('')
 const uploading = ref(false)
@@ -16,13 +20,18 @@ const imageRef = ref<HTMLImageElement | null>(null)
 
 onMounted(async () => {
   try {
-    const [typesRes, modelRes]: any[] = await Promise.all([
-      modelsApi.getAnimalTypes(),
-      modelsApi.getCurrentModel(),
-    ])
+    const typesRes: any = await modelsApi.getAnimalTypes()
     animalTypes.value = typesRes.animal_types || []
-    currentModel.value = modelRes.current_model
-    if (currentModel.value) selectedAnimalType.value = currentModel.value.animal_type_id
+
+    if (canReadModelConfig.value) {
+      try {
+        const modelRes: any = await modelsApi.getCurrentModel()
+        currentModel.value = modelRes.current_model
+        if (currentModel.value) selectedAnimalType.value = currentModel.value.animal_type_id
+      } catch {
+        currentModel.value = null
+      }
+    }
   } catch {}
 })
 
@@ -55,7 +64,7 @@ async function handleDetect() {
   try {
     const res: any = await detectionApi.detectImage(uploadedFilePath.value, selectedAnimalType.value ?? undefined)
     detectResult.value = res
-    ElMessage.success(`检测完成，发现 ${res.total_targets} 个目标`)
+    ElMessage.success(`识别完成，发现 ${res.total_targets} 个目标`)
     await nextTick()
     drawBBoxes()
   } catch (e: any) {
@@ -75,20 +84,11 @@ function drawBBoxes() {
   const ctx = canvas.getContext('2d')!
   ctx.clearRect(0, 0, canvas.width, canvas.height)
 
-  const colorMap: Record<string, string> = {
-    normal: '#48bb78',
-    suspicious: '#ed8936',
-    abnormal: '#f56565',
-  }
-  const labelMap: Record<string, string> = {
-    normal: '正常', suspicious: '可疑', abnormal: '异常'
-  }
-
   for (const det of detectResult.value.detections) {
-    const color = colorMap[det.health_status] || '#aaa'
+    const color = '#36a2eb'
     const x1 = det.bbox_x1, y1 = det.bbox_y1
     const x2 = det.bbox_x2, y2 = det.bbox_y2
-    const label = `${det.class_name} ${(det.confidence * 100).toFixed(0)}% [${labelMap[det.health_status]}]`
+    const label = `${det.class_name} ${(det.confidence * 100).toFixed(0)}%`
 
     // 绘制边框
     ctx.strokeStyle = color
@@ -122,22 +122,15 @@ function resetAll() {
 function downloadResult(id: number) {
   window.open(`http://localhost:8000/api/detection/${id}/download`, '_blank')
 }
-
-function healthTagType(s: string) {
-  return s === 'normal' ? 'success' : s === 'suspicious' ? 'warning' : 'danger'
-}
-function healthLabel(s: string) {
-  return s === 'normal' ? '正常' : s === 'suspicious' ? '可疑' : '异常'
-}
 </script>
 
 <template>
   <div class="image-detection">
     <div class="page-header">
-      <h2>🖼️ 图片检测</h2>
-      <p>上传动物图片，AI 自动识别健康状态</p>
-      <el-tag v-if="currentModel" type="primary">当前模型：{{ currentModel.model_name }}</el-tag>
-      <el-tag v-else type="info">Mock 演示模式</el-tag>
+      <h2>🖼️ 图片行为识别</h2>
+      <p>上传动物图片，AI 自动识别当前行为类别</p>
+      <el-tag v-if="canReadModelConfig && currentModel" type="primary">当前模型：{{ currentModel.model_name }}</el-tag>
+      <el-tag v-else type="success">检测时将按所选动物类型自动匹配模型</el-tag>
     </div>
 
     <div class="main-content">
@@ -145,6 +138,11 @@ function healthLabel(s: string) {
       <div class="left-panel">
         <div class="card">
           <h3 class="card-title">选择动物类型</h3>
+          <p class="card-hint">
+            本次检测会优先使用所选动物类型对应的模型；
+            <span v-if="canReadModelConfig">未匹配到时才回退到当前激活模型或 backend/models/best.pt。</span>
+            <span v-else>普通用户不展示管理员模型配置，但仍会自动匹配后端可用模型。</span>
+          </p>
           <el-select v-model="selectedAnimalType" placeholder="请选择" style="width:100%" clearable>
             <el-option v-for="t in animalTypes" :key="t.id" :label="t.name" :value="t.id" />
           </el-select>
@@ -171,7 +169,7 @@ function healthLabel(s: string) {
         <div class="btn-row">
           <el-button type="primary" size="large" :loading="detecting"
             :disabled="!uploadedFilePath || uploading" class="detect-btn" @click="handleDetect">
-            {{ detecting ? '检测中...' : '开始检测' }}
+            {{ detecting ? '识别中...' : '开始识别' }}
           </el-button>
           <el-button v-if="detectResult" size="large" @click="downloadResult(detectResult.record_id)">
             ⬇ 下载标注图
@@ -183,7 +181,7 @@ function healthLabel(s: string) {
       <div class="right-panel">
         <div v-if="!detectResult" class="result-placeholder">
           <span style="font-size:64px">🔍</span>
-          <p>上传图片后点击「开始检测」</p>
+          <p>上传图片后点击「开始识别」</p>
         </div>
 
         <div v-else>
@@ -194,27 +192,27 @@ function healthLabel(s: string) {
           </div>
 
           <div class="result-stats">
-            <div class="stat-item"><span class="sn">{{ detectResult.total_targets }}</span><span class="sl">检测目标</span></div>
-            <div class="stat-item normal"><span class="sn">{{ detectResult.normal_count }}</span><span class="sl">正常</span></div>
-            <div class="stat-item suspicious"><span class="sn">{{ detectResult.suspicious_count }}</span><span class="sl">可疑</span></div>
-            <div class="stat-item abnormal"><span class="sn">{{ detectResult.abnormal_count }}</span><span class="sl">异常</span></div>
+            <div class="stat-item"><span class="sn">{{ detectResult.total_targets }}</span><span class="sl">识别目标</span></div>
+            <div class="stat-item behavior"><span class="sn">{{ detectResult.detections?.length || 0 }}</span><span class="sl">行为结果</span></div>
           </div>
           <el-alert v-if="detectResult.is_mock" type="warning" show-icon
-            title="演示模式" description="模型文件未配置，以下为模拟结果" style="margin-bottom:14px" />
-          <h4 style="margin-bottom:12px">检测详情</h4>
+            title="演示模式" description="未找到可用模型文件，以下为模拟行为识别结果" style="margin-bottom:14px" />
+          <el-alert v-else type="success" show-icon
+            title="真实模型推理" description="本次任务为图片行为识别，优先使用所选动物类型对应模型" style="margin-bottom:14px" />
+          <h4 style="margin-bottom:12px">识别详情</h4>
           <div v-for="det in detectResult.detections" :key="det.target_index"
-            class="det-item" :class="det.health_status">
+            class="det-item behavior">
             <div class="det-header">
               <span class="det-idx">目标 {{ det.target_index + 1 }}</span>
-              <el-tag :type="healthTagType(det.health_status)" size="small">{{ healthLabel(det.health_status) }}</el-tag>
+              <el-tag type="primary" size="small">行为识别</el-tag>
             </div>
             <div class="det-body">
-              <span>类别：<b>{{ det.class_name }}</b></span>
+              <span>行为类别：<b>{{ det.class_name }}</b></span>
               <span>置信度：<b>{{ (det.confidence * 100).toFixed(1) }}%</b></span>
               <span>位置：({{ det.bbox_x1 }}, {{ det.bbox_y1 }}) → ({{ det.bbox_x2 }}, {{ det.bbox_y2 }})</span>
             </div>
           </div>
-          <div class="result-meta">耗时 {{ detectResult.processing_time }}s ｜ 模型：{{ detectResult.model_name }}</div>
+          <div class="result-meta">耗时 {{ detectResult.processing_time }}s ｜ 模型：{{ canReadModelConfig ? (detectResult.model_name || currentModelText) : '自动匹配模型' }}</div>
         </div>
       </div>
     </div>
@@ -229,6 +227,7 @@ function healthLabel(s: string) {
 .main-content { display:grid; grid-template-columns:340px 1fr; gap:16px; align-items:start; }
 .card { background:#fff; border-radius:12px; padding:20px; margin-bottom:16px; box-shadow:0 2px 8px rgba(0,0,0,.06); }
 .card-title { margin:0 0 14px; font-size:14px; font-weight:600; color:#2d3447; }
+.card-hint { margin: -6px 0 12px; font-size: 12px; line-height: 1.6; color: #718096; }
 .uploader { width:100%; :deep(.el-upload-dragger) { width:100%; height:200px; border-radius:10px; display:flex; align-items:center; justify-content:center; } }
 .upload-placeholder { text-align:center; color:#718096; }
 .preview-box { position:relative; width:100%; height:100%; }
@@ -238,14 +237,14 @@ function healthLabel(s: string) {
 .detect-btn { width:100%; height:44px; font-size:15px; background:linear-gradient(135deg,#4fc3f7,#0288d1); border:none; border-radius:10px; }
 .right-panel { background:#fff; border-radius:12px; padding:24px; min-height:400px; box-shadow:0 2px 8px rgba(0,0,0,.06); }
 .result-placeholder { display:flex; flex-direction:column; align-items:center; justify-content:center; height:360px; color:#a0aec0; gap:12px; }
-.result-stats { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-bottom:20px; }
+.result-stats { display:grid; grid-template-columns:repeat(2,1fr); gap:12px; margin-bottom:20px; }
 .stat-item { background:#f7f8fa; border-radius:10px; padding:14px; text-align:center; display:flex; flex-direction:column; gap:4px; }
-.stat-item.normal { background:#f0fff4; } .stat-item.suspicious { background:#fffbeb; } .stat-item.abnormal { background:#fff5f5; }
+.stat-item.behavior { background:#eff6ff; }
 .sn { font-size:28px; font-weight:700; color:#2d3447; line-height:1; }
-.stat-item.normal .sn { color:#48bb78; } .stat-item.suspicious .sn { color:#ed8936; } .stat-item.abnormal .sn { color:#f56565; }
+.stat-item.behavior .sn { color:#2563eb; }
 .sl { font-size:12px; color:#718096; }
 .det-item { border:1px solid #e8eaed; border-radius:10px; padding:12px 16px; margin-bottom:10px; }
-.det-item.abnormal { border-color:#feb2b2; background:#fff5f5; } .det-item.suspicious { border-color:#fbd38d; background:#fffbeb; } .det-item.normal { border-color:#9ae6b4; background:#f0fff4; }
+.det-item.behavior { border-color:#bfdbfe; background:#f8fbff; }
 .det-header { display:flex; align-items:center; gap:10px; margin-bottom:8px; }
 .det-idx { font-weight:600; font-size:13px; color:#2d3447; }
 .det-body { display:flex; gap:20px; flex-wrap:wrap; font-size:13px; color:#4a5568; }

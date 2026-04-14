@@ -38,7 +38,7 @@ const router = createRouter({
       path: '/detection/camera',
       name: 'camera-detection',
       component: () => import('../views/CameraDetectionView.vue'),
-      meta: { title: '摄像头实时检测', requiresAuth: true },
+      meta: { title: '实时检测', requiresAuth: true },
     },
     {
       path: '/statistics',
@@ -71,22 +71,16 @@ const router = createRouter({
       meta: { title: '报告详情', requiresAuth: true },
     },
     {
-      path: '/animals',
-      name: 'animals',
-      component: () => import('../views/AnimalsView.vue'),
-      meta: { title: '动物档案', requiresAuth: true },
-    },
-    {
       path: '/settings',
       name: 'settings',
       component: () => import('../views/SettingsView.vue'),
-      meta: { title: '系统配置', requiresAuth: true },
+      meta: { title: '系统配置', requiresAuth: true, adminOnly: true },
     },
     {
       path: '/models',
       name: 'models',
       component: () => import('../views/ModelsView.vue'),
-      meta: { title: '模型管理', requiresAuth: true },
+      meta: { title: '模型管理', requiresAuth: true, adminOnly: true },
     },
     {
       path: '/:pathMatch(.*)*',
@@ -95,13 +89,33 @@ const router = createRouter({
   ],
 })
 
-// 路由守卫
-router.beforeEach((to) => {
+router.beforeEach(async (to) => {
+  const authStore = useAuthStore()
   const token = localStorage.getItem('token')
+
   if (to.meta.requiresAuth && !token) {
     return { name: 'login' }
   }
+
   if ((to.name === 'login' || to.name === 'register') && token) {
+    return { name: 'home' }
+  }
+
+  if (!token) return
+
+  if (!authStore.role) {
+    try {
+      const profile = await fetch('http://localhost:8000/api/users/profile', {
+        headers: { Authorization: `Bearer ${token}` },
+      }).then((res) => (res.ok ? res.json() : null))
+
+      authStore.setRole(profile?.role || 'user')
+    } catch {
+      authStore.setRole('user')
+    }
+  }
+
+  if (to.meta.adminOnly && !authStore.isAdmin) {
     return { name: 'home' }
   }
 })

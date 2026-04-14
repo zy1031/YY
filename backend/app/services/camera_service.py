@@ -31,6 +31,7 @@ class CameraSession:
         self.normal_count = 0
         self.created_at = datetime.now()
         self.screenshots: list = []
+        self.track_health_history: Dict[int, list] = {}
         self._is_mock = not Path(model_path).exists()
 
     def is_mock(self) -> bool:

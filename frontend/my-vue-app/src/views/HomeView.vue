@@ -10,7 +10,7 @@ const authStore = useAuthStore()
 
 const stats = ref({
   totalDetections: 0,
-  todayDetections: 0,
+  imageBehaviorTasks: 0,
   abnormalCount: 0,
   reportCount: 0,
 })
@@ -20,9 +20,9 @@ const loading = ref(false)
 const statsLoading = ref(false)
 
 const quickActions = [
-  { title: '图片检测', icon: '🖼️', desc: '上传图片进行健康检测', route: '/detection/image', color: '#4fc3f7' },
-  { title: '视频检测', icon: '🎬', desc: '上传视频逐帧分析', route: '/detection/video', color: '#81c784' },
-  { title: '实时检测', icon: '📷', desc: '摄像头实时检测跟踪', route: '/detection/camera', color: '#ffb74d' },
+  { title: '图片行为识别', icon: '🖼️', desc: '上传图片识别动物当前行为', route: '/detection/image', color: '#4fc3f7' },
+  { title: '视频检测', icon: '🎬', desc: '上传本地视频后边播放边检测', route: '/detection/video', color: '#81c784' },
+  { title: '实时检测', icon: '📷', desc: '摄像头实时监测与异常预警', route: '/detection/camera', color: '#ffb74d' },
   { title: '查看记录', icon: '📋', desc: '查看所有历史检测记录', route: '/records', color: '#f06292' },
 ]
 
@@ -36,7 +36,7 @@ onMounted(async () => {
       import('../api/reports').then(m => m.reportsApi.list(1, 1)),
     ])
     stats.value.totalDetections = overviewRes.total_detections || 0
-    stats.value.todayDetections = overviewRes.today_detections || 0
+    stats.value.imageBehaviorTasks = overviewRes.image_behavior_tasks || 0
     stats.value.abnormalCount = overviewRes.total_abnormal || 0
     stats.value.reportCount = reportsRes.total || 0
     recentRecords.value = historyRes.history || []
@@ -72,17 +72,17 @@ onMounted(async () => {
           </div>
         </div>
         <div class="stat-card anim-fade-in anim-delay-2">
-          <div class="stat-icon" style="background: #e8f5e9">📅</div>
+          <div class="stat-icon" style="background: #e8f1ff">🧠</div>
           <div class="stat-info">
-            <span class="stat-value">{{ stats.todayDetections }}</span>
-            <span class="stat-label">今日检测次数</span>
+            <span class="stat-value">{{ stats.imageBehaviorTasks }}</span>
+            <span class="stat-label">图片行为识别次数</span>
           </div>
         </div>
         <div class="stat-card anim-fade-in anim-delay-3">
           <div class="stat-icon" style="background: #fff3e0">⚠️</div>
           <div class="stat-info">
             <span class="stat-value" style="color: #f57c00">{{ stats.abnormalCount }}</span>
-            <span class="stat-label">异常动物数</span>
+            <span class="stat-label">视频/监控异常目标数</span>
           </div>
         </div>
         <div class="stat-card anim-fade-in anim-delay-4">
@@ -120,10 +120,10 @@ onMounted(async () => {
       <h3 class="section-title">最近检测记录</h3>
       <el-table :data="recentRecords" v-loading="loading" style="width: 100%" border>
         <el-table-column prop="id" label="ID" width="80" />
-        <el-table-column prop="detection_type" label="检测类型" width="100">
+        <el-table-column prop="detection_type" label="任务类型" width="120">
           <template #default="{ row }">
             <el-tag :type="row.detection_type === 'image' ? 'primary' : row.detection_type === 'video' ? 'success' : 'warning'">
-              {{ row.detection_type === 'image' ? '图片' : row.detection_type === 'video' ? '视频' : '摄像头' }}
+              {{ row.task_label || (row.detection_type === 'image' ? '图片行为识别' : '实时检测') }}
             </el-tag>
           </template>
         </el-table-column>
@@ -134,10 +134,11 @@ onMounted(async () => {
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="total_targets" label="检测目标数" width="110" />
-        <el-table-column prop="abnormal_count" label="异常数" width="90">
+        <el-table-column prop="total_targets" label="目标数" width="100" />
+        <el-table-column prop="abnormal_count" label="异常数" width="100">
           <template #default="{ row }">
-            <span :style="{ color: row.abnormal_count > 0 ? '#f57c00' : 'inherit' }">{{ row.abnormal_count }}</span>
+            <template v-if="row.detection_type === 'image'">-</template>
+            <span v-else :style="{ color: row.abnormal_count > 0 ? '#f57c00' : 'inherit' }">{{ row.abnormal_count }}</span>
           </template>
         </el-table-column>
         <el-table-column prop="created_at" label="检测时间" />

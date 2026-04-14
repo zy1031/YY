@@ -31,7 +31,7 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
         expire = datetime.utcnow() + expires_delta
     else:
         expire = datetime.utcnow() + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    
+
     to_encode.update({"exp": expire})
     # sub 字段必须为字符串（JWT 标准）
     if "sub" in to_encode:
@@ -61,4 +61,17 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="无效的认证凭证",
         )
-    return {"user_id": int(user_id_str), "username": payload.get("username")}
+    return {
+        "user_id": int(user_id_str),
+        "username": payload.get("username"),
+        "role": payload.get("role"),
+    }
+
+async def require_admin(current_user: dict = Depends(get_current_user)) -> dict:
+    """要求管理员权限"""
+    if current_user.get("role") != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="仅管理员可访问",
+        )
+    return current_user

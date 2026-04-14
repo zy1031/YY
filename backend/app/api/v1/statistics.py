@@ -3,7 +3,7 @@
 """
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, select
 from datetime import datetime, timedelta
 from typing import Optional
 from app.core.database import get_db
@@ -35,12 +35,22 @@ async def get_overview(
         DetectionRecord.user_id == uid
     ).scalar() or 0
 
+    non_image_records = db.query(DetectionRecord.id).filter(
+        DetectionRecord.user_id == uid,
+        DetectionRecord.detection_type != "image"
+    ).subquery()
+
     total_abnormal = db.query(func.sum(DetectionRecord.abnormal_count)).filter(
-        DetectionRecord.user_id == uid
+        DetectionRecord.id.in_(select(non_image_records.c.id))
     ).scalar() or 0
 
     total_suspicious = db.query(func.sum(DetectionRecord.suspicious_count)).filter(
-        DetectionRecord.user_id == uid
+        DetectionRecord.id.in_(select(non_image_records.c.id))
+    ).scalar() or 0
+
+    image_count = db.query(func.count(DetectionRecord.id)).filter(
+        DetectionRecord.user_id == uid,
+        DetectionRecord.detection_type == "image"
     ).scalar() or 0
 
     # 按类型统计
@@ -57,6 +67,7 @@ async def get_overview(
         "total_targets": int(total_targets),
         "total_abnormal": int(total_abnormal),
         "total_suspicious": int(total_suspicious),
+        "image_behavior_tasks": int(image_count),
         "type_stats": [
             {"type": t.detection_type, "count": t.count}
             for t in type_stats
@@ -81,12 +92,19 @@ async def get_trend(
         ).scalar() or 0
         abnormal = db.query(func.sum(DetectionRecord.abnormal_count)).filter(
             DetectionRecord.user_id == uid,
+            DetectionRecord.detection_type != "image",
+            func.date(DetectionRecord.created_at) == day
+        ).scalar() or 0
+        image_tasks = db.query(func.count(DetectionRecord.id)).filter(
+            DetectionRecord.user_id == uid,
+            DetectionRecord.detection_type == "image",
             func.date(DetectionRecord.created_at) == day
         ).scalar() or 0
         result.append({
             "date": str(day),
             "count": count,
-            "abnormal": int(abnormal)
+            "abnormal": int(abnormal),
+            "image_behavior_tasks": int(image_tasks)
         })
     return {"trend": result}
 
@@ -101,8 +119,13 @@ async def get_stats_by_animal_type(
     rows = db.query(
         AnimalType.name,
         func.count(DetectionRecord.id).label("total"),
-        func.sum(DetectionRecord.abnormal_count).label("abnormal"),
-        func.sum(DetectionRecord.normal_count).label("normal"),
+        func.sum(
+            func.case((DetectionRecord.detection_type != "image", DetectionRecord.abnormal_count), else_=0)
+        ).label("abnormal"),
+        func.sum(
+            func.case((DetectionRecord.detection_type != "image", DetectionRecord.normal_count), else_=0)
+        ).label("normal"),
+        func.sum(func.case((DetectionRecord.detection_type == "image", 1), else_=0)).label("image_tasks"),
     ).join(
         DetectionRecord, DetectionRecord.animal_type_id == AnimalType.id
     ).filter(
@@ -116,6 +139,7 @@ async def get_stats_by_animal_type(
                 "total": r.total,
                 "abnormal": int(r.abnormal or 0),
                 "normal": int(r.normal or 0),
+                "image_tasks": int(r.image_tasks or 0),
             }
             for r in rows
         ]
@@ -135,7 +159,10 @@ async def get_health_distribution(
         func.count(DetectionResult.id).label("count")
     ).join(
         DetectionRecord, DetectionRecord.id == DetectionResult.detection_record_id
-    ).filter(DetectionRecord.user_id == uid)
+    ).filter(
+        DetectionRecord.user_id == uid,
+        DetectionRecord.detection_type != "image"
+    )
 
     if animal_type_id:
         query = query.filter(DetectionRecord.animal_type_id == animal_type_id)
